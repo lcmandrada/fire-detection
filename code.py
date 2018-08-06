@@ -1,12 +1,10 @@
 '''
 Fire Detection
 Luke Clark M. Andrada
-'''
 
-"""
 fire detection through image processing
-    background subtraction > color analysis > display analysis > shape analysis
-        > variance analysis > blob detection > alarm decision unit
+    background subtraction > color analysis > source analysis > display analysis
+        > shape analysis > variance analysis > blob detection > alarm decision unit
 
 background subtraction
     higher open_kernel      aggressive noise reduction          stricter detection
@@ -15,6 +13,12 @@ background subtraction
 color analysis
     higher div              fire is more red than blue          stricter detection
     higher mul              fire is more red than blue          stricter detection
+
+source analysis
+    lower range             fire is more stagnant               stricter detection
+
+display analysis
+    higher gamma            blob is more different              stricter detection
 
 shape analysis
     lower omega             fire is more different              stricter detection
@@ -31,8 +35,8 @@ blob detection
 alarm decision unit
     lower den               fewer final alerts                  stricter detection
     higher len              fewer final alerts                  stricter detection
-
-"""
+    lower interval          fewer final alert                   stricter detection
+'''
 
 from math import ceil
 import cv2
@@ -63,7 +67,13 @@ class FireDetection():
         # minimum blob area
         self.pix = 2
         # shape analysis limit
-        self.barrier = 5
+        self.barrier = 2
+
+        # centroid
+        self.xcentroid = None
+        self.ycentroid = None
+        # centroid distance threshold
+        self.range = 50
 
         # displays
         self.last = None
@@ -91,15 +101,17 @@ class FireDetection():
         self.detected = 0
         self.count = 0
         # alarm and alert status
-        self.alarm = False
         self.alert = False
 
         # frame counter
         self.frame = 0
+        # false detection interval
+        self.interval = 10
 
     def background_subtraction(self, img):
         """ background subtraction through gaussian mixture model """
 
+        # resize image for lighter processing
         img = cv2.resize(img, (ceil(img.shape[1] / self.factor), ceil(img.shape[0] / self.factor)))
 
         # copy input
@@ -164,10 +176,12 @@ class FireDetection():
     def blob_detection(self, img, imgz, color, threshold):
         """ detect blobs through contours """
 
-        # reset alarm
-        self.alarm = False
         # count frames
         self.frame += 1
+
+        # append false detection every interval
+        if self.frame % self.interval == 0:
+            self.alarm_decision(False)
 
         # find blob contours
         _, contours, _ = cv2.findContours(cv2.cvtColor(color, cv2.COLOR_BGR2GRAY), 0, 2)
@@ -182,65 +196,88 @@ class FireDetection():
             # get boundary attributes
             x_coord, y_coord, width, height = cv2.boundingRect(contours[0])
 
-            if self.count < self.barrier:
-                display = self.display_analysis(width, height)
-            else:
-                display = True
-
-            # ignore blobs below minimum area
-            if display and width > self.pix and height > self.pix:
-                # stop shape analysis if final alert breaks barrier
+            # apply source analysis
+            if self.source_analysis(x_coord, y_coord, width, height):
+                # stop display analysis if final alert breaks barrier
                 if self.count < self.barrier:
-                    shape = self.shape_analysis(imgz, threshold)
+                    display = self.display_analysis(width, height)
                 else:
-                    shape = True
+                    display = True
 
-                # start variance analysis if shape analysis is okay
-                if shape:
-                    # bind the blob if variance analysis is okay
-                    if self.variance_analysis(color[y_coord:y_coord + height,
-                                                    x_coord:x_coord + width]):
-                        blobs = cv2.rectangle(blobs,
-                                              (x_coord * self.factor, y_coord * self.factor),
-                                              ((x_coord + width) * self.factor,
-                                               (y_coord + height) * self.factor),
-                                              (255, 255, 255),
-                                              2)
-                        # set alarm
-                        self.alarm = True
-                        # send final alert if alarm ratio exceeds
+                # ignore blobs below minimum area
+                if display and width > self.pix and height > self.pix:
+                    # stop shape analysis if final alert breaks barrier
+                    if self.count < self.barrier:
+                        shape = self.shape_analysis(imgz, threshold)
+                    else:
+                        shape = True
 
-                        if self.alarm_decision(self.alarm):
-                            # report final alert with counted frames
-                            print('Fire Alert! {}x at {}f'.format(self.count, self.frame))
-
+                    # start variance analysis if shape analysis is okay
+                    if shape:
+                        # bind the blob if variance analysis is okay
+                        if self.variance_analysis(color[y_coord:y_coord + height,
+                                                        x_coord:x_coord + width]):
                             blobs = cv2.rectangle(blobs,
-                                                  (x_coord * self.factor,
-                                                   y_coord * self.factor),
+                                                  (x_coord * self.factor, y_coord * self.factor),
                                                   ((x_coord + width) * self.factor,
                                                    (y_coord + height) * self.factor),
-                                                  (0, 0, 255),
+                                                  (255, 255, 255),
                                                   2)
-                            # count detected blobs
-                            self.detected += 1
-                        # # report counted blobs with counted frames
-                        # print('Fire. {}x at {}f'.format(self.detected, self.frame))
-                else:
-                    self.alarm_decision(False)
+
+                            # send final alert if alarm ratio exceeds
+                            if self.alarm_decision(True) and self.count > self.barrier:
+                                # report final alert with counted frames
+                                print('Fire Alert! {}x at {}f'.format(self.count, self.frame))
+
+                                # bind the blob if final alert
+                                blobs = cv2.rectangle(blobs,
+                                                      (x_coord * self.factor,
+                                                       y_coord * self.factor),
+                                                      ((x_coord + width) * self.factor,
+                                                       (y_coord + height) * self.factor),
+                                                      (0, 0, 255),
+                                                      2)
+                                # count detected blobs
+                                self.detected += 1
 
         # return copy with blobs
         return blobs
 
+    def source_analysis(self, x_coord, y_coord, width, height):
+        """ source_analysis through centroid """
+
+        # reset state
+        flag = False
+
+        # calculate current center coordinates
+        xcenter = x_coord + width / 2
+        ycenter = y_coord + height / 2
+
+        # accept detection if source location is within threshold
+        if self.xcentroid is not None:
+            if abs(xcenter - self.xcentroid) < self.range:
+                if abs(ycenter - self.ycentroid) < self.range:
+                    flag = True
+
+        # save centroid
+        self.xcentroid = xcenter
+        self.ycentroid = ycenter
+
+        return flag
+
     def display_analysis(self, width, height):
         """ display analysis through width and height ratio """
 
+        # reset state
         flag = False
         self.this = width / height
 
+        # only accept detection if display ratio exceeds threshold
         if self.last is not None:
             if abs(self.last - self.this) > self.gamma:
                 flag = True
 
+        # save ratio
         self.last = self.this
 
         return flag
@@ -262,7 +299,7 @@ class FireDetection():
         # compare current and previous histogram
         if self.prev is not None:
             correl = cv2.compareHist(self.cur, self.prev, cv2.HISTCMP_CORREL)
-            # print(correl)
+
             # input passes if fire shape is different as per omega
             if correl < self.omega:
                 flag = True
@@ -306,7 +343,7 @@ class FireDetection():
 
         # calculate variance
         var = total / count
-        # print(var)
+
         # input passes if block is diverse as per sigma
         if var > self.sigma:
             flag = True
@@ -332,9 +369,9 @@ class FireDetection():
             if sum(self.history) > self.len / self.den:
                 self.count += 1
                 alert = True
+            # reset counter if no-alarm ratio exceeds
             else:
                 self.count = 0
-                print('reset')
 
         # keep history length
         if len(self.history) > self.len:
@@ -348,7 +385,10 @@ if __name__ == '__main__':
     FIRE = FireDetection()
 
     # initialize input
-    VIDEO = '<video>'
+    # VIDEO = 'vid/1.h264'
+    # VIDEO = 'vid/fire2.mp4'
+    # VIDEO = 'vid/phone2.mp4'
+    VIDEO = 'vid/test3.MP4'
     CAPTURE = cv2.VideoCapture(VIDEO)
 
     # capture input indefinitely
