@@ -73,7 +73,7 @@ class FireDetection():
         self.xcentroid = None
         self.ycentroid = None
         # centroid distance threshold
-        self.range = 50
+        self.range = 20
 
         # displays
         self.last = None
@@ -88,14 +88,14 @@ class FireDetection():
         self.omega = 0.6
 
         # intense fire multiplier
-        self.weight = 1
+        self.weight = 1.5
         # variance analysis threshold
-        self.sigma = 500
+        self.sigma = 50
 
         # alarm history
         self.history = []
         # alert ratio
-        self.den = 1.5
+        self.den = 1.7
         # history length
         self.len = 10
         self.detected = 0
@@ -143,7 +143,20 @@ class FireDetection():
         block = np.zeros(img.shape, dtype=np.uint8)
 
         # calculate mean of Y
-        y_mean = (ycrcb[0].mean()) * self.mul
+        count = 0
+        y_total = 0
+        for y_axis in range(0, block.shape[0]):
+            for x_axis in range(0, block.shape[1]):
+                # skip if mask pixel is black or irrelevant
+                if threshold[y_axis, x_axis] == 0:
+                    continue
+                y_part, _, _ = ycrcb[y_axis, x_axis]
+                y_total += y_part
+                count += 1
+        if count != 0:
+            y_mean = y_total / count
+        else:
+            y_mean = 0
 
         # iterate each block pixel
         for y_axis in range(0, block.shape[0]):
@@ -156,19 +169,16 @@ class FireDetection():
                 y_part, cr_part, cb_part = ycrcb[y_axis, x_axis]
 
                 # turn on pixel at coordinates if fire
-                if y_part < self.div and y_part > y_mean:
-                    if y_part > cb_part * self.mul and cr_part > cb_part * self.mul:
+                if y_part > y_mean:
+                    if y_part < self.div:
+                        if y_part > cb_part * self.mul and cr_part > cb_part * self.mul:
+                            block[y_axis, x_axis] = [255, 255, 255]
+                    # turn on pixel at coordinates if intense fire
+                    elif y_part > self.div and cr_part > cb_part:
                         block[y_axis, x_axis] = [255, 255, 255]
-                # turn on pixel at coordinates if intense fire
-                elif y_part > self.div and y_part > y_mean and cr_part > cb_part:
-                    block[y_axis, x_axis] = [255, 255, 255]
-
-        # apply morphological operations
-        opening = cv2.morphologyEx(block, cv2.MORPH_OPEN, self.open_kernel)
-        closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, self.close_kernel)
 
         # extract blocks considered to contain fire
-        copy = cv2.bitwise_and(img, closing)
+        copy = cv2.bitwise_and(img, block)
 
         # return copy with blocks
         return copy
@@ -314,15 +324,28 @@ class FireDetection():
         """ variance analysis on Cr """
 
         # reset state
-        count = 0
         total = 0
         flag = False
 
         # convert input to yCrCb
         ycrcb = cv2.cvtColor(img, cv2.COLOR_BGR2YCR_CB)
         # calculate mean of Cr
-        cr_mean = ycrcb[1].mean()
+        count = 0
+        cr_total = 0
+        for y_axis in range(0, img.shape[0]):
+            for x_axis in range(0, img.shape[1]):
+                # skip if mask pixel is black or irrelevant
+                if (img[y_axis, x_axis] == [0, 0, 0]).all():
+                    continue
+                _, cr_part, _ = ycrcb[y_axis, x_axis]
+                cr_total += cr_part
+                count += 1
+        if count != 0:
+            cr_mean = cr_total / count
+        else:
+            cr_mean = 0
 
+        count = 0
         # iterate each input pixel
         for y_axis in range(0, img.shape[0]):
             for x_axis in range(0, img.shape[1]):
@@ -385,10 +408,7 @@ if __name__ == '__main__':
     FIRE = FireDetection()
 
     # initialize input
-    # VIDEO = 'vid/1.h264'
-    # VIDEO = 'vid/fire2.mp4'
-    # VIDEO = 'vid/phone2.mp4'
-    VIDEO = 'vid/test3.MP4'
+    VIDEO = 'vid/red.h264'
     CAPTURE = cv2.VideoCapture(VIDEO)
 
     # capture input indefinitely
@@ -408,8 +428,6 @@ if __name__ == '__main__':
         # apply blob detection
         BLOBS = FIRE.blob_detection(COPY, COPYZ, COLOR, THRESHOLD)
 
-        # cv2.imshow('copy', COPY)
-        # cv2.imshow('fg', FOREGROUND)
         # cv2.imshow('color', COLOR)
         cv2.imshow('blobs', BLOBS)
 
